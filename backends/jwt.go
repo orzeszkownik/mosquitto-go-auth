@@ -2,11 +2,14 @@ package backends
 
 import (
 	"fmt"
-
+	"os"
 	jwtGo "github.com/golang-jwt/jwt"
 	"github.com/iegomez/mosquitto-go-auth/hashing"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 )
 
 type JWT struct {
@@ -20,6 +23,8 @@ type tokenOptions struct {
 	skipUserExpiration bool
 	skipACLExpiration  bool
 	secret             string
+	rsaPublicKey       *rsa.PublicKey
+	useRsaPublicKey    bool
 	userFieldKey       string
 }
 
@@ -64,6 +69,28 @@ func NewJWT(authOpts map[string]string, logLevel log.Level, hasher hashing.HashC
 
 	if secret, ok := authOpts["jwt_secret"]; ok {
 		options.secret = secret
+	}
+
+	if useRsaPublicKey, ok := authOpts["jwt_use_rsa_public_key"]; ok && useRsaPublicKey == "true" {
+		options.useRsaPublicKey = true
+	}
+
+	if publicKeyFile, ok := authOpts["jwt_public_key_file"]; ok {
+		log.Debugf("public key path: %s", publicKeyFile)
+		data, err := os.ReadFile(publicKeyFile)
+		if err != nil {
+			log.Debugf("Can not read public key file: %s", err)
+			return nil, err
+		}
+		rsaPublicKey, err := StringToRSAPublicKey(data)
+		if err != nil {
+			log.Debugf("error in certificate conversion")
+			return nil, err
+		} else {
+			options.rsaPublicKey = rsaPublicKey
+		}
+	} else {
+		log.Debugf("Empty public key path")
 	}
 
 	if userField, ok := authOpts["jwt_userfield"]; ok && userField == "Username" {
@@ -125,11 +152,20 @@ func (o *JWT) Halt() {
 	o.checker.Halt()
 }
 
-func getJWTClaims(secret string, tokenStr string, skipExpiration bool) (*jwtGo.MapClaims, error) {
+func getJWTClaims(secret string, tokenStr string, skipExpiration bool, useRsaPublicKey bool, rsaPublicKey *rsa.PublicKey) (*jwtGo.MapClaims, error) {
 
-	jwtToken, err := jwtGo.ParseWithClaims(tokenStr, &jwtGo.MapClaims{}, func(token *jwtGo.Token) (interface{}, error) {
-		return []byte(secret), nil
-	})
+	var jwtToken *jwtGo.Token
+	var err error
+
+	if useRsaPublicKey {
+		jwtToken, err = jwtGo.ParseWithClaims(tokenStr, &jwtGo.MapClaims{}, func(token *jwtGo.Token) (interface{}, error) {
+			return (rsaPublicKey), nil
+		})	
+	} else {
+		jwtToken, err = jwtGo.ParseWithClaims(tokenStr, &jwtGo.MapClaims{}, func(token *jwtGo.Token) (interface{}, error) {
+			return []byte(secret), nil
+		})	
+	}
 
 	expirationError := false
 	if err != nil {
@@ -157,7 +193,7 @@ func getJWTClaims(secret string, tokenStr string, skipExpiration bool) (*jwtGo.M
 }
 
 func getUsernameForToken(options tokenOptions, tokenStr string, skipExpiration bool) (string, error) {
-	claims, err := getJWTClaims(options.secret, tokenStr, skipExpiration)
+	claims, err := getJWTClaims(options.secret, tokenStr, skipExpiration, options.useRsaPublicKey, options.rsaPublicKey)
 
 	if err != nil {
 		return "", err
@@ -178,7 +214,7 @@ func getUsernameForToken(options tokenOptions, tokenStr string, skipExpiration b
 }
 
 func getClaimsForToken(options tokenOptions, tokenStr string, skipExpiration bool) (map[string]interface{}, error) {
-	claims, err := getJWTClaims(options.secret, tokenStr, skipExpiration)
+	claims, err := getJWTClaims(options.secret, tokenStr, skipExpiration, options.useRsaPublicKey, options.rsaPublicKey)
 	if err != nil {
 		return make(map[string]interface{}), err
 	}
@@ -187,7 +223,7 @@ func getClaimsForToken(options tokenOptions, tokenStr string, skipExpiration boo
 }
 
 func getIssForToken(options tokenOptions, tokenStr string, skipExpiration bool) (string, error) {
-	claims, err := getJWTClaims(options.secret, tokenStr, skipExpiration)
+	claims, err := getJWTClaims(options.secret, tokenStr, skipExpiration, options.useRsaPublicKey, options.rsaPublicKey)
 
 	if err != nil {
 		return "", err
@@ -205,4 +241,19 @@ func getIssForToken(options tokenOptions, tokenStr string, skipExpiration bool) 
 	}
 
 	return issString, nil
+}
+
+func StringToRSAPublicKey(publicKeyStr []byte) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode(publicKeyStr)
+	if block == nil {
+		log.Debugf("Error decoding public key string. It have to be in PEM format.")
+	}
+	rsaPublicKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
+	if err != nil {
+		log.Debugf("Error when parsing public key: %s", err)
+	}
+	log.Debugf("Rsa Pub Key N %s", rsaPublicKey.N)
+	log.Debugf("Rsa Pub Key E %s", rsaPublicKey.E)
+
+	return rsaPublicKey, nil
 }
