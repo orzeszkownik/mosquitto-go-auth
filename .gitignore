@@ -22,9 +22,13 @@ vendor
 .idea/
 .vscode/
 
+
 # generated test certificates, keys and CSRs
 test-files/certificates/**/*.csr
 test-files/certificates/**/*.pem
 
 # todo
 TODO
+
+conf/*
+!conf/readme.txt

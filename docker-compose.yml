@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  mqtt-broker:
+    build:
+      context: .
+    volumes:
+    - ./conf:/etc/mosquitto
+    - ./log:/mosquitto/log
+    - ./data:/mosquitto/data
+    ports:
+    - 1883:1883
+    - 1884:1884
